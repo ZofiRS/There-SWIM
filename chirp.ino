@@ -57,6 +57,7 @@ AudioConnection          patchCord5(multiply1, biquad1);
 AudioConnection          patchCord6(biquad1, 0, i2s1, 1);
 AudioConnection          patchCord7(biquad1, queue1);
 AudioControlSGTL5000     sgtl5000_1;     //xy=486.3896255493164,156.05194664001465
+AudioAnalyzeNoteFrequency noteFreq // Name is self explanatory
 // GUItool: end automatically generated code
 
 // chirp parameters
@@ -65,6 +66,8 @@ float endFreq = 5000.0;       // end frequency in Hz
 float chirpDuration = 2.0;    // seconds per chirp
 float currentFreq = startFreq;
 unsigned long lastUpdate = 0;
+
+float speedOfSound = 343.0; //m/s
 
 
 void setup() 
@@ -138,6 +141,19 @@ void loop()
   float t = (millis() % (unsigned long)(chirpDuration * 1000)) / 1000.0;  // time in sec within current chirp
   currentFreq = startFreq + (endFreq - startFreq) * (t / chirpDuration);
   wave1.frequency(currentFreq);
+
+  //Find note frequency
+  if (noteFreq.available()) {
+    float freq = noteFreq.read();
+    Serial.print("frequency");
+    Serial.println(freq);
+
+    float timeElapsed = (currentFreq - startFreq) / (endFreq - startFreq) * chirpDuration;
+
+    float distance = timeElapsed * speedOfSound;
+
+  }
+
 
   if (queue1.available() > 2) 
   {
