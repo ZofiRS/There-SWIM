@@ -1,30 +1,5 @@
-
-
-
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-#include <OctoWS2811.h>
-
-// Any group of digital pins may be used
-const int numPins = 1;
-byte pinList[numPins] = {2};
-
-const int ledsPerStrip = 24;
-
-// These buffers need to be large enough for all the pixels.
-// The total number of pixels is "ledsPerStrip * numPins".
-// Each pixel needs 3 bytes, so multiply by 3.  An "int" is
-// 4 bytes, so divide by 4.  The array is created using "int"
-// so the compiler will align it to 32 bit memory.
-DMAMEM int displayMemory[ledsPerStrip * numPins * 3 / 4];
-int drawingMemory[ledsPerStrip * numPins * 3 / 4];
-
-const int config = WS2811_GRB | WS2811_800kHz;
-
-OctoWS2811 leds(ledsPerStrip, displayMemory, drawingMemory, config, numPins, pinList);
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-
+#include <makefile.h>
 #include <Audio.h>
 #include <Wire.h>
 #include <SPI.h>
