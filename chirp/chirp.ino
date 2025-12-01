@@ -39,12 +39,24 @@ AudioEffectMultiply      multiply1;      //xy=418.75000762939453,397.75003623962
 AudioFilterBiquad        biquad1;        //xy=563.7500076293945,396.75000953674316
 AudioOutputI2S           i2s1;           //xy=770.6627349853516,313.5974769592285
 AudioRecordQueue         queue1;         //xy=770.7501373291016,436.7500066757202
+
+AudioSynthWaveform       distanceWave; 
+AudioFilterStateVariable distanceBP;
+
+
 AudioConnection          patchCord1(i2s2, 0, biquad2, 0);
+
+// for chirp output wave - mic left channel
 AudioConnection          patchCord2(wave1, 0, i2s1, 0);
+// for distance output wave - mic right channel
+AudioConnection          patchCord_dist(distanceWave, 0, distanceBP, 0);
+AudioConnection          patchCord_distBP(distanceBP, 0, i2s1, 1);
+
+
 AudioConnection          patchCord3(wave1, 0, multiply1, 0);
 AudioConnection          patchCord4(biquad2, 0, multiply1, 1);
 AudioConnection          patchCord5(multiply1, biquad1);
-AudioConnection          patchCord6(biquad1, 0, i2s1, 1);
+//AudioConnection          patchCord6(biquad1, 0, i2s1, 1); 
 AudioConnection          patchCord7(biquad1, queue1);
 AudioControlSGTL5000     sgtl5000_1;     //xy=486.3896255493164,156.05194664001465
 AudioAnalyzeNoteFrequency noteFreq // Name is self explanatory
@@ -127,7 +139,7 @@ volatile uint32_t sampcount = 0;
 
 void loop() 
 {
-  // linear chirp
+  // create linear chirp
   float t = (millis() % (unsigned long)(chirpDuration * 1000)) / 1000.0;  // time in sec within current chirp
   currentFreq = startFreq + (endFreq - startFreq) * (t / chirpDuration);
   wave1.frequency(currentFreq);
@@ -142,10 +154,23 @@ void loop()
 
     float distance = timeElapsed * speedOfSound;
 
-    Serial.print("distance: ");
+    Serial.print("distance: "); // units in meters?
     Serial.println(distance);
 
   }
+  float Q = 100.0f; //large is narrow, small is wide
+  // if distance is 0-5 cm output audio signal at bandpass f=440Hz
+  if (distance < 0.05) {
+    // Bandpass settings 
+    float centerFreq= 440.0f; // frequency of interest
+  } else if(distance >= 0.05 && distance < 0.10) { // if distance is 5-10 cm output audio signal at bandpass f=880Hz
+    float centerFreq= 880.0f; // frequency of interest
+  }
+  distanceBP.frequency(centerFreq);
+  distanceBP.resonance(Q); // q factor 
+
+  
+
 
 
   if (queue1.available() > 2) 

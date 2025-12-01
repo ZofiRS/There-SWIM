@@ -2,170 +2,155 @@
 #include <Wire.h>
 #include <SPI.h>
 
-// ------------------------------------------------------------
-// Audio system objects
-// ------------------------------------------------------------
-AudioInputI2S        i2sIn;        // mic input (left)
-AudioSynthWaveform   waveTx;       // chirp generator
-AudioEffectMultiply  multiply1;    // TX * RX -> beat signal
-AudioAnalyzeFFT1024  fftBeat;      // FFT on beat
-AudioOutputI2S       audioOut;     // for monitoring
-AudioControlSGTL5000 sgtl5000;
+// -----------------------------
+// FMCW CHIRP SETTINGS
+// -----------------------------
+const float f_start = 5000.0f;   // Hz
+const float f_end   = 9000.0f;   // Hz
+const float T_chirp = 0.15;     // seconds
+const float amplitude = 0.7f;    // sweep amplitude
 
-// Audio connections
-// TX: waveform -> multiply
-AudioConnection patch_tx(waveTx, 0, multiply1, 0);
-// RX: mic input -> multiply
-AudioConnection patch_rx(i2sIn, 0, multiply1, 1);
-// Beat signal -> FFT
-AudioConnection patch_mul_fft(multiply1, 0, fftBeat, 0);
+const float speed_sound = 343.0f; // m/s
+const float K = speed_sound * T_chirp / (2.0f * (f_end - f_start));
 
-// Optional monitoring (left: chirp, right: raw mic)
-AudioConnection patch_tx_out(waveTx, 0, audioOut, 0);
-AudioConnection patch_mic_out(i2sIn, 0, audioOut, 1);
+// -----------------------------
+// AUDIO OBJECTS
+// -----------------------------
+AudioSynthToneSweep chirp;
+AudioInputI2S       mic;
+AudioAnalyzeFFT1024 fft;
+AudioOutputI2S      outI2S;
 
-// ------------------------------------------------------------
-// FMCW / signal parameters
-// ------------------------------------------------------------
-const float c_sound = 343.0f;                       // m/s
-const int   FFT_N   = 1024;
-const float sampleRateF = (float)AUDIO_SAMPLE_RATE_EXACT;
+AudioConnection patchCord1(chirp, 0, outI2S, 0);  // chirp to left
+AudioConnection patchCord2(mic,   0, fft,   0);   // mic left channel -> FFT
 
-// Chirp band (wider than before for better resolution)
-float f_start = 5000.0f;                            // Hz
-float f_end   = 9000.0f;                            // Hz
-float T_chirp = 0.08f;                              // seconds
+AudioControlSGTL5000 audioShield;
 
-// Derived
-float B_band;                                       // = f_end - f_start
 
-// Beat frequency search range
-const float MIN_BEAT_FREQ = 20.0f;                  // Hz
-const float MAX_BEAT_FREQ = 5000.0f;                // Hz
+// record recieving data from mic b4 fft 
+// record output wave 
+// -----------------------------
+// Moving average buffer (declare BEFORE loop)
+// -----------------------------
+const int AVG_SIZE = 10;
+float avgBuffer[AVG_SIZE];
+int avgIndex = 0;
+bool avgFilled = false;
 
-// Only trust FFT frames from the "middle" of the chirp
-const float SAFE_START = 0.10f;                     // 10% into chirp
-const float SAFE_END   = 0.90f;                     // 90% into chirp
+float addToAverage(float x) {
+  avgBuffer[avgIndex] = x;
+  avgIndex = (avgIndex + 1) % AVG_SIZE;
 
-// Amplitude threshold for FFT peak
-const float PEAK_MAG_THRESH = 0.02f;
+  if (avgIndex == 0) avgFilled = true;
 
-// Optional empirical linear calibration:
-// distance_est ≈ a * peakBin + b, if enabled
-const bool  USE_LINEAR_CALIBRATION = false;
-const float CAL_A = 0.03f;     // set from your own measurements
-const float CAL_B = -0.10f;    // set from your own measurements
+  float sum = 0.0f;
+  int count = avgFilled ? AVG_SIZE : avgIndex;
+  if (count == 0) return x; // first sample guard
 
-elapsedMicros chirpTime;
-
-// ------------------------------------------------------------
-// Setup
-// ------------------------------------------------------------
+  for (int i = 0; i < count; i++) sum += avgBuffer[i];
+  return sum / (float)count;
+}
+// -----------------------------
+// FFT PROCESSING CONSTANTS
+// -----------------------------
+const float NOISE_THRESHOLD = 0.005f; 
+const float MIN_DISTANCE_CM = 5.0f;
+const float MAX_DISTANCE_CM = 150.0f;
+// -----------------------------
+// SETUP
+// -----------------------------
 void setup() {
-    Serial.begin(115200);
-    delay(300);
+  Serial.begin(115200);
+  delay(200);
 
-    B_band = f_end - f_start;
+  AudioMemory(40);
 
-    AudioMemory(150);
+  audioShield.enable();
+  audioShield.inputSelect(AUDIO_INPUT_MIC);
+  audioShield.micGain(36);   // adjust as needed for clipping / SNR
+  audioShield.volume(0.5);
 
-    sgtl5000.enable();
-    sgtl5000.inputSelect(AUDIO_INPUT_MIC);
-    sgtl5000.micGain(36);        // adjust if clipping or too quiet
-    sgtl5000.volume(0.6);
+  // Correct ToneSweep signature:
+  // play(amplitude, freqStart, freqEnd, sweepTime)
+  chirp.play(amplitude, (int)f_start, (int)f_end, T_chirp);
 
-    // Chirp source
-    waveTx.begin(WAVEFORM_SINE);
-    waveTx.amplitude(0.9);
-
-    chirpTime = 0;
-
-    Serial.println("===== FMCW Acoustic Ranger (cleaned) =====");
-    Serial.print("fs = "); Serial.println(sampleRateF);
-    Serial.print("f_start = "); Serial.print(f_start);
-    Serial.print(" Hz, f_end = "); Serial.print(f_end);
-    Serial.print(" Hz, T = "); Serial.print(T_chirp);
-    Serial.println(" s");
+  Serial.println("=== FMCW continuous ranging started ===");
 }
 
-// ------------------------------------------------------------
-// Main loop
-// ------------------------------------------------------------
+// -----------------------------
+// LOOP
+// -----------------------------
+// -----------------------------
+// LOOP (MODIFIED)
+// -----------------------------
 void loop() {
-    // --------------------------------------------------------
-    // 1. Generate linear chirp
-    // --------------------------------------------------------
-    float t = chirpTime / 1e6f;  // elapsedMicros in seconds
 
-    if (t >= T_chirp) {
-        chirpTime = 0;
-        t = 0;
+    // Keep chirp continuous
+    if (!chirp.isPlaying()) {
+        chirp.play(amplitude, (int)f_start, (int)f_end, T_chirp);
     }
 
-    // Linear sweep f(t) = f_start + B * (t / T)
-    float f_now = f_start + B_band * (t / T_chirp);
-    waveTx.frequency(f_now);
+    if (fft.available()) {
+        // Calculate the bin width
+        float binWidth = AUDIO_SAMPLE_RATE_EXACT / 1024.0f; // sampleRate / N
 
-    // Only use middle of chirp for FFT (avoid edges)
-    float chirpPhase = t / T_chirp;
-    bool safe = (chirpPhase > SAFE_START && chirpPhase < SAFE_END);
+        // --- 1. Define Search Window in Bins ---
+        // Formula: f_beat = distance_m / K
+        // f_min = MIN_DISTANCE_CM / 100 / K
+        // f_max = MAX_DISTANCE_CM / 100 / K
 
-    // If not in safe window, flush any FFT frame and bail out
-    if (!safe) {
-        fftBeat.available(); // just to clear any stale frame
-        return;
-    }
+        float K_meters = K; // K is calculated in meters/Hz at the top
 
-    // --------------------------------------------------------
-    // 2. FFT on beat signal when a frame is ready
-    // --------------------------------------------------------
-    if (fftBeat.available()) {
-        // Hz per bin
-        float binWidth = sampleRateF / (float)FFT_N;
+        int min_freq_hz = (int)((MIN_DISTANCE_CM / 100.0f) / K_meters);
+        int max_freq_hz = (int)((MAX_DISTANCE_CM / 100.0f) / K_meters);
 
-        // Limit search to reasonable beat frequencies
-        int binMin = (int)(MIN_BEAT_FREQ / binWidth);
-        int binMax = (int)(MAX_BEAT_FREQ / binWidth);
+        // Convert frequencies (Hz) to FFT bins
+        int startBin = (int)(min_freq_hz / binWidth);
+        int endBin = (int)(max_freq_hz / binWidth);
 
-        if (binMin < 2) binMin = 2;                            // skip DC & very low bins
-        if (binMax > FFT_N / 2 - 1) binMax = FFT_N / 2 - 1;   // Nyquist limit
+        // Safety check for search bounds
+        startBin = max(2, startBin); // Ensure we skip DC/low-freq noise (bin 0, 1)
+        endBin= min(511, endBin); // Ensure we don't exceed the N/2 limit of 511
 
-        int   peakBin = -1;
-        float peakMag = 0.0f;
+        // -------- 2. Find FFT peak with Threshold and Window --------
+        float maxVal = 0.0f;
+        int maxBin = 0;
 
-        // Find maximum magnitude in [binMin, binMax]
-        for (int i = binMin; i <= binMax; i++) {
-            float mag = fftBeat.read(i);
-            if (mag > peakMag) {
-                peakMag = mag;
-                peakBin = i;
+        // Search only within the calculated window
+        for (int i = startBin; i <= endBin; i++) {
+            float v = fft.read(i);
+            if (v > maxVal) {
+                maxVal = v;
+                maxBin = i;
             }
         }
 
-        // If we found a decent peak, compute beat frequency and distance
-        if (peakBin >= 0 && peakMag > PEAK_MAG_THRESH) {
-            float beatFreq = peakBin * binWidth;  // Hz
+        // -------- 3. Apply Noise Threshold Filter --------
+        if (maxVal < NOISE_THRESHOLD) {
+            // No reliable peak found, skip this measurement
+            Serial.println("Raw: Peak below threshold. Smoothed: --");
+            // Optional: Skip the moving average update to avoid corrupting the average
+            // return;
+        } else {
+            // Peak is valid, proceed with calculations
+            float peakFreq = maxBin * binWidth;
 
-            // Theoretical FMCW formula:
-            // R = (f_b * c * T_chirp) / (2 * B)
-            float distance_m = (beatFreq * c_sound * T_chirp) / (2.0f * B_band);
+            // Convert beat frequency -> distance (centimeters)
+            // distance_cm = K * peakFreq * 100
+            float distance_cm = K_meters * peakFreq * 100.0f;
 
-            // Optional linear calibration override, if you've fit CAL_A, CAL_B
-            if (USE_LINEAR_CALIBRATION) {
-                distance_m = CAL_A * (float)peakBin + CAL_B;
-            }
+            // ---- 10-point moving average ----
+            float distance_avg = addToAverage(distance_cm);
 
-            // Debug output
-            Serial.print("bin=");
-            Serial.print(peakBin);
-            Serial.print("  fb=");
-            Serial.print(beatFreq, 2);
-            Serial.print(" Hz  mag=");
-            Serial.print(peakMag, 3);
-            Serial.print("  dist=");
-            Serial.print(distance_m, 3);
-            Serial.println(" m");
+            // Serial output: raw + smoothed
+            Serial.print("Raw: ");
+            Serial.print(distance_cm, 3);
+            Serial.print(" cm   Smoothed: ");
+            Serial.print(distance_avg, 3);
+            Serial.println(" cm");
         }
-        // else: no strong peak, likely noise or bad frame – ignore
     }
+
+    // small delay to avoid flooding serial (optional)
+    delay(1);
 }
