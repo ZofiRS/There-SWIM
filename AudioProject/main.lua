@@ -151,9 +151,6 @@ end
 --------------------------------------------------------
 -- DRAW WAVEFORM
 --------------------------------------------------------
---------------------------------------------------------
--- DRAW WAVEFORM (with color)
---------------------------------------------------------
 local function drawSignal(sig, r, g, b, yOffset)
     local w, h = love.graphics.getDimensions()
     local midY = yOffset or (h * 0.6)
@@ -173,6 +170,36 @@ local function drawSignal(sig, r, g, b, yOffset)
         love.graphics.line(pts)
     end
 end
+
+local function drawChirpletSpiral(real, imag)
+    local w, h = love.graphics.getDimensions()
+
+    local centerY = h * 0.55        -- vertical center of spiral
+    local scale   = h * 0.20        -- radius of helix
+    local t_scale = w / real.length -- how fast the coil moves right over time
+
+    local pts = {}
+
+    for i = 0, real.length - 1 do
+        local t_offset = i * t_scale
+
+        -- (Re, Im) mapped into screen space
+        local x = t_offset + real[i] * scale
+        local y = centerY - imag[i] * scale
+
+        table.insert(pts, x)
+        table.insert(pts, y)
+    end
+
+    love.graphics.setColor(0.9, 0.9, 1.0)  -- pale blue-white spiral
+    love.graphics.setLineWidth(2)
+    if #pts >= 4 then
+        love.graphics.line(pts)
+    end
+end
+
+
+
 
 
 
@@ -236,16 +263,15 @@ function love.draw()
     end
 
     -- Draw signals
-    if mode == "sine" then
-        -- Sine: green, uses default midY
-        drawSignal(sigReal, 0, 0.8, 0.4)
+    if mode == "chirplet" then
+        local real, imag = generateChirpletVisual()
+        drawChirpletSpiral(real, imag)
     else
-        -- Chirplet real (red), centered lower
-        drawSignal(sigReal, 1.0, 0.2, 0.2, h * 0.75)
-
-        -- Chirplet imaginary (indigo), centered higher
-        drawSignal(sigImag, 0.3, 0.2, 1.0, h * 0.25)
+        drawSignal(sigReal, 0, 0.8, 0.4)
+        if showMusicMarkers then drawMusicNoteMarkers() end
     end
+
+
 
     -- UI text
     love.graphics.setColor(1, 1, 1)
